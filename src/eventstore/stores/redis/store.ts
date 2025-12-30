@@ -23,7 +23,7 @@ import {
   getDatabaseNameFromConnectionString,
 } from './schema';
 import { createFilter, createQuery } from '../../filter';
-import { MemoryEventStreamNotifier } from '../../notifiers';
+import { RedisPubSubNotifier } from '../../notifiers';
 
 import { createClient } from 'redis';
 
@@ -69,8 +69,12 @@ export class RedisEventStore implements EventStore {
       database: this.database,
     });
 
-    // This is the "Default" EventStreamNotifier, but allow override
-    this.notifier = options.notifier ?? new MemoryEventStreamNotifier();
+    // Use Redis Pub/Sub notifier by default for cross-process notifications
+    // Users can override with their own notifier if needed
+    this.notifier = options.notifier ?? new RedisPubSubNotifier({
+      connectionString,
+      database: this.database,
+    });
     this.scanCount = options.scanCount;
   }
 
