@@ -58,6 +58,25 @@ npm install @ricofritzsche/eventstore mongodb
 bun add @ricofritzsche/eventstore mongodb
 ```
 
+### Redis Distribution (`@ricofritzsche/eventstore/redis`)
+
+The Redis distribution includes all core functionality plus the Redis store. **Requires `redis` package.**
+
+```typescript
+import { 
+  RedisEventStore,
+  RedisEventStoreOptions,
+  // ... all core exports
+} from '@ricofritzsche/eventstore/redis';
+```
+
+**Installation:**
+```bash
+npm install @ricofritzsche/eventstore redis
+# or
+bun add @ricofritzsche/eventstore redis
+```
+
 ## Usage Examples
 
 ### Using Postgres Backend
@@ -89,6 +108,28 @@ import { MongoEventStore, createFilter } from '@ricofritzsche/eventstore/mongodb
 const eventStore = new MongoEventStore({
   connectionString: process.env.MONGODB_URL,
   databaseName: 'myapp'
+});
+
+await eventStore.initializeDatabase();
+
+// Use the store...
+await eventStore.append([{
+  eventType: 'UserRegistered',
+  payload: { userId: '123', email: 'user@example.com' }
+}]);
+
+const result = await eventStore.query(createFilter(['UserRegistered']));
+console.log(result.events);
+```
+
+### Using Redis Backend
+
+```typescript
+import { RedisEventStore, createFilter } from '@ricofritzsche/eventstore/redis';
+
+const eventStore = new RedisEventStore({
+  connectionString: process.env.REDIS_URL,
+  database: 0 // Optional, defaults to 0
 });
 
 await eventStore.initializeDatabase();

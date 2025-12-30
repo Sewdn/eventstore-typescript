@@ -1,7 +1,7 @@
 {
   "name": "@ricofritzsche/eventstore",
   "version": "1.0.8",
-  "description": "A TypeScript event sourcing library with pluggable persistence backends (Postgres, MongoDB), real-time subscriptions, and projection support for building responsive event-sourced applications",
+  "description": "A TypeScript event sourcing library with pluggable persistence backends (Postgres, MongoDB, Redis), real-time subscriptions, and projection support for building responsive event-sourced applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -16,6 +16,10 @@
     "./mongodb": {
       "types": "./dist/mongodb.d.ts",
       "default": "./dist/mongodb.js"
+    },
+    "./redis": {
+      "types": "./dist/redis.d.ts",
+      "default": "./dist/redis.js"
     }
   },
   "files": [
@@ -50,6 +54,7 @@
     "postgres",
     "mongodb",
     "mongo",
+    "redis",
     "real-time",
     "subscriptions",
     "projections",
@@ -73,6 +78,7 @@
     "jest": "^29.7.0",
     "mongodb": "^6.0.0",
     "prettier": "^3.0.0",
+    "redis": "^5.0.0",
     "pg": "^8.11.0",
     "ts-jest": "^29.2.0",
     "ts-node": "^10.9.0",
@@ -84,13 +90,17 @@
   },
   "peerDependencies": {
     "pg": "^8.11.0",
-    "mongodb": "^6.0.0"
+    "mongodb": "^6.0.0",
+    "redis": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "pg": {
       "optional": true
     },
     "mongodb": {
+      "optional": true
+    },
+    "redis": {
       "optional": true
     }
   },

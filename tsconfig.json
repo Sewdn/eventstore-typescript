@@ -30,7 +30,8 @@
     "src/eventstore/**/*",
     "src/index.ts",
     "src/postgres.ts",
-    "src/mongodb.ts"
+    "src/mongodb.ts",
+    "src/redis.ts"
   ],
   "exclude": [
     "node_modules",
