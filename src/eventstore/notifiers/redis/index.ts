@@ -142,10 +142,11 @@ export class RedisPubSubNotifier implements EventStreamNotifier {
       }
 
       // Subscribe to the channel with message handler
-      // In node-redis v5, the callback receives (message, channel)
+      // In node-redis v5, the subscribe callback receives only the message parameter
+      // The channel is already known since we're subscribing to a specific channel
       // Note: handleMessage is async, but we can't await it in the callback
       // We handle errors inside handleMessage itself
-      await this.subscriber.subscribe(this.channel, (message: string, channel: string) => {
+      await this.subscriber.subscribe(this.channel, (message: string) => {
         // Fire and forget - handleMessage handles its own errors
         // This is acceptable because:
         // 1. handleMessage has try-catch for error handling
