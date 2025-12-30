@@ -28,7 +28,9 @@
   },
   "include": [
     "src/eventstore/**/*",
-    "src/index.ts"
+    "src/index.ts",
+    "src/postgres.ts",
+    "src/mongodb.ts"
   ],
   "exclude": [
     "node_modules",
