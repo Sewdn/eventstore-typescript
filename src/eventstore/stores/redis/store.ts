@@ -29,6 +29,7 @@ import { createClient } from 'redis';
 
 const NON_EXISTENT_EVENT_TYPE = '__NON_EXISTENT__' + Math.random().toString(36);
 
+
 export interface RedisEventStoreOptions {
   connectionString?: string;
   database?: number;
@@ -41,7 +42,7 @@ export interface RedisEventStoreOptions {
  * Additionally, it facilitates event subscriptions through an event stream notifier mechanism.
  */
 export class RedisEventStore implements EventStore {
-  private client: RedisClientType;
+  private client: ReturnType<typeof createClient>;
   private readonly database: number;
   private readonly notifier: EventStreamNotifier;
 
@@ -176,25 +177,49 @@ export class RedisEventStore implements EventStore {
     }
 
     try {
-      // Use Redis transaction (MULTI/EXEC) for atomicity
-      const multi = this.client.multi();
+      // Use WATCH/MULTI/EXEC pattern for atomic optimistic locking
+      // Retry loop in case of watch failure (another transaction modified watched keys)
+      const maxRetries = 10;
+      let retries = 0;
+      let success = false;
+      let documentsToStore: EventDocument[] = [];
 
-      // Get the current max sequence number for the context
-      const filterFn = compileQueryFilter(eventQuery);
-      const eventTypesToQuery = getEventTypesToQuery(eventQuery);
+      while (!success && retries < maxRetries) {
+        // Watch the sequence counter to detect concurrent modifications
+        await this.client.watch(SEQUENCE_COUNTER_KEY);
 
-      let contextMaxSeq = 0;
-      if (eventTypesToQuery && eventTypesToQuery.length > 0) {
-        // Check max sequence for specific event types
-        for (const eventType of eventTypesToQuery) {
-          const indexKey = getEventTypeIndexKey(eventType);
-          const sequenceNumbers = await this.client.sMembers(indexKey);
-          
-          for (const seqStr of sequenceNumbers) {
-            const seqNum = parseInt(seqStr, 10);
-            if (seqNum > contextMaxSeq) {
-              const eventKey = getEventKey(seqNum);
-              const eventData = await this.client.get(eventKey);
+        // Get the current max sequence number for the context (while watching)
+        const filterFn = compileQueryFilter(eventQuery);
+        const eventTypesToQuery = getEventTypesToQuery(eventQuery);
+
+        let contextMaxSeq = 0;
+        if (eventTypesToQuery && eventTypesToQuery.length > 0) {
+          // Check max sequence for specific event types
+          for (const eventType of eventTypesToQuery) {
+            const indexKey = getEventTypeIndexKey(eventType);
+            const sequenceNumbers = await this.client.sMembers(indexKey);
+            
+            for (const seqStr of sequenceNumbers) {
+              const seqNum = parseInt(seqStr, 10);
+              if (seqNum > contextMaxSeq) {
+                const eventKey = getEventKey(seqNum);
+                const eventData = await this.client.get(eventKey);
+                if (eventData) {
+                  const doc = JSON.parse(eventData) as EventDocument;
+                  if (filterFn(doc)) {
+                    contextMaxSeq = Math.max(contextMaxSeq, seqNum);
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          // Check all events
+          const keys = await this.client.keys('eventstore:events:*');
+          for (const key of keys) {
+            const seqNum = parseSequenceNumberFromKey(key);
+            if (seqNum !== null && seqNum > contextMaxSeq) {
+              const eventData = await this.client.get(key);
               if (eventData) {
                 const doc = JSON.parse(eventData) as EventDocument;
                 if (filterFn(doc)) {
@@ -204,57 +229,67 @@ export class RedisEventStore implements EventStore {
             }
           }
         }
-      } else {
-        // Check all events
-        const keys = await this.client.keys('eventstore:events:*');
-        for (const key of keys) {
-          const seqNum = parseSequenceNumberFromKey(key);
-          if (seqNum !== null && seqNum > contextMaxSeq) {
-            const eventData = await this.client.get(key);
-            if (eventData) {
-              const doc = JSON.parse(eventData) as EventDocument;
-              if (filterFn(doc)) {
-                contextMaxSeq = Math.max(contextMaxSeq, seqNum);
-              }
-            }
-          }
+
+        // Verify optimistic locking
+        if (contextMaxSeq !== expectedMaxSequenceNumber) {
+          await this.client.unwatch();
+          throw new Error(
+            'eventstore-stores-redis-err06: Context changed: events were modified between query() and append()'
+          );
         }
+
+        // Get current counter value (while watching) to calculate sequence numbers
+        const currentCounter = await this.client.get(SEQUENCE_COUNTER_KEY);
+        const currentCounterValue = currentCounter ? parseInt(currentCounter, 10) : 0;
+        const startSequenceNumber = currentCounterValue + 1;
+
+        // Prepare all event data with correct sequence numbers
+        const now = new Date();
+        documentsToStore = [];
+        const multi = this.client.multi();
+
+        // Increment counter once for all events
+        multi.incrBy(SEQUENCE_COUNTER_KEY, events.length);
+
+        for (let i = 0; i < events.length; i++) {
+          const event = events[i];
+          if (!event) continue;
+          
+          const sequenceNumber = startSequenceNumber + i;
+          const doc = prepareEventForStorage(event, sequenceNumber, now);
+          documentsToStore.push(doc);
+
+          const eventKey = getEventKey(sequenceNumber);
+          const indexKey = getEventTypeIndexKey(doc.event_type);
+          const indexValue = sequenceNumber.toString();
+
+          // Queue event storage operations in transaction
+          multi.set(eventKey, JSON.stringify(doc));
+          multi.sAdd(indexKey, indexValue);
+        }
+
+        // Execute transaction atomically
+        // If watched keys changed, execResult will be null and we retry
+        const execResult = await multi.exec();
+
+        if (execResult === null) {
+          // Transaction was aborted (counter was modified), retry
+          retries++;
+          continue;
+        }
+
+        success = true;
+
+        // Convert stored documents to EventRecord[] and notify subscribers
+        const insertedEvents = mapDocumentsToEvents(documentsToStore);
+        await this.notifier.notify(insertedEvents);
       }
 
-      // Verify optimistic locking
-      if (contextMaxSeq !== expectedMaxSequenceNumber) {
+      if (!success) {
         throw new Error(
-          'eventstore-stores-redis-err06: Context changed: events were modified between query() and append()'
+          'eventstore-stores-redis-err10: Failed to append events after maximum retries (concurrent modification detected)'
         );
       }
-
-      // Get the next sequence number atomically
-      const nextSequenceNumber = await this.client.incrBy(SEQUENCE_COUNTER_KEY, events.length);
-      const startSequenceNumber = nextSequenceNumber - events.length + 1;
-
-      // Prepare events for storage
-      const now = new Date();
-      const documentsToStore: EventDocument[] = [];
-
-      for (let i = 0; i < events.length; i++) {
-        const event = events[i];
-        if (!event) continue; // Skip if undefined (shouldn't happen, but TypeScript safety)
-        
-        const sequenceNumber = startSequenceNumber + i;
-        const doc = prepareEventForStorage(event, sequenceNumber, now);
-        documentsToStore.push(doc);
-
-        const eventKey = getEventKey(sequenceNumber);
-        const indexKey = getEventTypeIndexKey(doc.event_type);
-
-        // Store event
-        multi.set(eventKey, JSON.stringify(doc));
-        // Add to event type index
-        multi.sAdd(indexKey, sequenceNumber.toString());
-      }
-
-      // Execute transaction
-      await multi.exec();
 
       // Convert stored documents to EventRecord[] and notify subscribers
       const insertedEvents = mapDocumentsToEvents(documentsToStore);
