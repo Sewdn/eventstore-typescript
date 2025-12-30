@@ -34,6 +34,12 @@ export interface RedisEventStoreOptions {
   connectionString?: string;
   database?: number;
   notifier?: EventStreamNotifier;
+  /**
+   * Hint for SCAN iterator batch size (keys per iteration).
+   * Higher values may improve performance but use more memory.
+   * Default: undefined (uses Redis default, typically 10)
+   */
+  scanCount?: number;
 }
 
 /**
@@ -45,6 +51,7 @@ export class RedisEventStore implements EventStore {
   private client: ReturnType<typeof createClient>;
   private readonly database: number;
   private readonly notifier: EventStreamNotifier;
+  private readonly scanCount: number | undefined;
 
   constructor(options: RedisEventStoreOptions = {}) {
     const connectionString = options.connectionString || process.env.REDIS_URL || process.env.DATABASE_URL;
@@ -64,6 +71,7 @@ export class RedisEventStore implements EventStore {
 
     // This is the "Default" EventStreamNotifier, but allow override
     this.notifier = options.notifier ?? new MemoryEventStreamNotifier();
+    this.scanCount = options.scanCount;
   }
 
   async query(filterCriteria: EventQuery): Promise<QueryResult>;
@@ -109,14 +117,24 @@ export class RedisEventStore implements EventStore {
           }
         }
       } else {
-        // Query all events
-        const keys = await this.client.keys('eventstore:events:*');
-        for (const key of keys) {
-          const eventData = await this.client.get(key);
-          if (eventData) {
-            const doc = JSON.parse(eventData) as EventDocument;
-            if (filterFn(doc)) {
-              allEvents.push(doc);
+        // Query all events using SCAN iterator (non-blocking, production-safe)
+        // In node-redis v5, scanIterator yields arrays of keys, not individual keys
+        const scanOptions: { MATCH: string; COUNT?: number } = {
+          MATCH: 'eventstore:events:*',
+        };
+        if (this.scanCount !== undefined) {
+          scanOptions.COUNT = this.scanCount;
+        }
+
+        for await (const keys of this.client.scanIterator(scanOptions)) {
+          // Process keys in batches (scanIterator yields arrays in v5)
+          for (const key of keys) {
+            const eventData = await this.client.get(key);
+            if (eventData) {
+              const doc = JSON.parse(eventData) as EventDocument;
+              if (filterFn(doc)) {
+                allEvents.push(doc);
+              }
             }
           }
         }
@@ -214,16 +232,26 @@ export class RedisEventStore implements EventStore {
             }
           }
         } else {
-          // Check all events
-          const keys = await this.client.keys('eventstore:events:*');
-          for (const key of keys) {
-            const seqNum = parseSequenceNumberFromKey(key);
-            if (seqNum !== null && seqNum > contextMaxSeq) {
-              const eventData = await this.client.get(key);
-              if (eventData) {
-                const doc = JSON.parse(eventData) as EventDocument;
-                if (filterFn(doc)) {
-                  contextMaxSeq = Math.max(contextMaxSeq, seqNum);
+          // Check all events using SCAN iterator (non-blocking, production-safe)
+          // In node-redis v5, scanIterator yields arrays of keys, not individual keys
+          const scanOptions: { MATCH: string; COUNT?: number } = {
+            MATCH: 'eventstore:events:*',
+          };
+          if (this.scanCount !== undefined) {
+            scanOptions.COUNT = this.scanCount;
+          }
+
+          for await (const keys of this.client.scanIterator(scanOptions)) {
+            // Process keys in batches (scanIterator yields arrays in v5)
+            for (const key of keys) {
+              const seqNum = parseSequenceNumberFromKey(key);
+              if (seqNum !== null && seqNum > contextMaxSeq) {
+                const eventData = await this.client.get(key);
+                if (eventData) {
+                  const doc = JSON.parse(eventData) as EventDocument;
+                  if (filterFn(doc)) {
+                    contextMaxSeq = Math.max(contextMaxSeq, seqNum);
+                  }
                 }
               }
             }
