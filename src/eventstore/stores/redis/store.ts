@@ -216,7 +216,9 @@ export class RedisEventStore implements EventStore {
           // Move to next batch (earlier in time)
           const lastEntry = entries[entries.length - 1];
           if (lastEntry) {
-            lastId = `(${lastEntry.id}`; // Exclusive range for next batch
+            // Extract stream ID from tuple: [streamId, fieldValuePairs]
+            const [lastStreamId] = lastEntry;
+            lastId = `(${lastStreamId}`; // Exclusive range for next batch
           } else {
             break;
           }
@@ -249,11 +251,15 @@ export class RedisEventStore implements EventStore {
         // Increment counter once for all events
         multi.incrBy(SEQUENCE_COUNTER_KEY, events.length);
 
+        // Track which events were actually processed (for index alignment)
+        const processedEventIndices: number[] = [];
+        
         // Add events to stream using XADD
         for (let i = 0; i < events.length; i++) {
           const event = events[i];
           if (!event) continue;
           
+          processedEventIndices.push(i); // Track that this event was processed
           const sequenceNumber = startSequenceNumber + i;
           const streamFields = prepareEventForStreamStorage(event, sequenceNumber, now);
           
@@ -279,37 +285,62 @@ export class RedisEventStore implements EventStore {
         // Extract stream IDs from XADD results
         // execResult is an array of command results in order
         // Each XADD returns a stream ID string
+        // Map stream IDs to their original event indices
+        const streamIdMap = new Map<number, string>(); // Maps original event index -> stream ID
+        
         if (execResult) {
           let xaddIndex = 1; // First command is INCRBY, then XADD commands
-          for (let i = 0; i < documentsToStore.length; i++) {
+          for (let docIndex = 0; docIndex < documentsToStore.length; docIndex++) {
             const streamId = execResult[xaddIndex] as string | undefined;
-            if (streamId) {
-              streamIds.push(streamId);
-              documentsToStore[i]!.streamId = streamId;
+            const originalEventIndex = processedEventIndices[docIndex];
+            
+            // Verify we have both streamId and originalEventIndex
+            if (streamId && originalEventIndex !== undefined) {
+              streamIdMap.set(originalEventIndex, streamId);
+              documentsToStore[docIndex]!.streamId = streamId;
+            } else {
+              // This shouldn't happen, but log if it does
+              throw new Error(
+                `eventstore-stores-redis-err11: Stream ID extraction failed at docIndex ${docIndex}, ` +
+                `streamId: ${streamId}, originalEventIndex: ${originalEventIndex}`
+              );
             }
             xaddIndex++;
+          }
+          
+          // Verify we processed all expected events
+          if (streamIdMap.size !== documentsToStore.length) {
+            throw new Error(
+              `eventstore-stores-redis-err12: Stream ID map size mismatch. ` +
+              `Expected ${documentsToStore.length}, got ${streamIdMap.size}`
+            );
           }
         }
 
         // Update indexes with stream IDs using Sorted Sets (outside transaction for now)
         // Use sequence number as score for efficient range queries
         // We could include these in the transaction, but ZADD doesn't need to be atomic with XADD
+        // Use the streamIdMap to correctly map stream IDs to their original event indices
         for (let i = 0; i < events.length; i++) {
           const event = events[i];
           if (!event) continue;
           
+          const streamId = streamIdMap.get(i);
+          if (!streamId) {
+            // This shouldn't happen - streamId should exist for all processed events
+            // Skip this event to avoid incorrect indexing
+            continue;
+          }
+          
           const indexKey = getEventTypeIndexKey(event.eventType);
-          const streamId = streamIds[i];
           const sequenceNumber = startSequenceNumber + i;
           
-          if (streamId) {
-            // Add stream ID to sorted set with sequence number as score
-            // This enables efficient range queries by sequence number
-            await this.client.zAdd(indexKey, {
-              score: sequenceNumber,
-              value: streamId,
-            });
-          }
+          // Add stream ID to sorted set with sequence number as score
+          // This enables efficient range queries by sequence number
+          await this.client.zAdd(indexKey, {
+            score: sequenceNumber,
+            value: streamId,
+          });
         }
 
         success = true;

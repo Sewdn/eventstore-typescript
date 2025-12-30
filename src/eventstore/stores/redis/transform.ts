@@ -1,12 +1,12 @@
 import { EventRecord, Event } from '../../types';
 
 /**
- * Redis Stream entry structure returned by XRANGE
+ * Redis Stream entry structure returned by XRANGE/XREVRANGE in node-redis v5
+ * Returns tuples: [string, string[]] where:
+ * - First element is the stream ID (format "timestamp-sequence")
+ * - Second element is a flat array of field-value pairs: ["field1", "value1", "field2", "value2", ...]
  */
-export interface StreamEntry {
-  id: string; // Stream ID in format "timestamp-sequence"
-  message: Record<string, string>; // Field-value pairs
-}
+export type StreamEntry = [string, string[]];
 
 /**
  * Event document extracted from Redis Stream entry
@@ -20,13 +20,25 @@ export interface EventDocument {
 }
 
 /**
- * Converts a Redis Stream entry to an EventDocument
+ * Converts a Redis Stream entry tuple to an EventDocument
+ * Parses the tuple format: [streamId, [field1, value1, field2, value2, ...]]
  */
 export function streamEntryToEventDocument(entry: StreamEntry): EventDocument {
-  const message = entry.message;
+  const [streamId, fieldValuePairs] = entry;
+  
+  // Convert flat array of field-value pairs to object
+  // Array format: ["field1", "value1", "field2", "value2", ...]
+  const message: Record<string, string> = {};
+  for (let i = 0; i < fieldValuePairs.length; i += 2) {
+    const field = fieldValuePairs[i];
+    const value = fieldValuePairs[i + 1];
+    if (field !== undefined && value !== undefined) {
+      message[field] = value;
+    }
+  }
   
   return {
-    streamId: entry.id,
+    streamId,
     sequence_number: parseInt(message.sequence_number || '0', 10),
     occurred_at: message.occurred_at || new Date().toISOString(),
     event_type: message.event_type || '',

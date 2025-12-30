@@ -60,13 +60,15 @@ export class RedisPubSubNotifier implements EventStreamNotifier {
 
     const id = `notifier-redis-sub-${++this.subscriptionCounter}`;
     const subscription: Subscription = { id, handle };
-    
-    this.subscriptions.set(id, subscription);
 
-    // Ensure subscriber connection is established and listening
+    // Ensure subscriber connection is established and listening BEFORE adding to subscriptions
+    // This prevents orphaned subscriptions if connection setup fails
     if (!this.isSubscriberConnected) {
       await this.ensureSubscriberConnected();
     }
+
+    // Only add to subscriptions map after connection is successfully established
+    this.subscriptions.set(id, subscription);
 
     return {
       id,
@@ -141,8 +143,17 @@ export class RedisPubSubNotifier implements EventStreamNotifier {
 
       // Subscribe to the channel with message handler
       // In node-redis v5, the callback receives (message, channel)
+      // Note: handleMessage is async, but we can't await it in the callback
+      // We handle errors inside handleMessage itself
       await this.subscriber.subscribe(this.channel, (message: string, channel: string) => {
-        this.handleMessage(message);
+        // Fire and forget - handleMessage handles its own errors
+        // This is acceptable because:
+        // 1. handleMessage has try-catch for error handling
+        // 2. Redis Pub/Sub callbacks cannot be async/await
+        // 3. Errors are logged and don't break the subscription
+        void this.handleMessage(message).catch((error) => {
+          console.error('notifiers-redis-err08: Unhandled error in handleMessage:', error);
+        });
       });
 
       this.isSubscriberConnected = true;
