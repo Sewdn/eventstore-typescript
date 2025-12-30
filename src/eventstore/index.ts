@@ -1,5 +1,6 @@
 export { PostgresEventStore, PostgresEventStoreOptions } from './stores/postgres';
 export { MemoryEventStore } from './stores/memory';
+export { MongoEventStore, MongoEventStoreOptions } from './stores/mongodb';
 
 export { MemoryEventStreamNotifier } from './notifiers';
 
