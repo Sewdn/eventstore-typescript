@@ -44,6 +44,7 @@ export class MongoEventStore implements EventStore {
   private client: MongoClient;
   private db: Db;
   private collection: Collection<EventDocument>;
+  private sequenceCounterCollection: Collection<{ _id: string; sequence: number }>;
   private readonly databaseName: string;
   private readonly notifier: EventStreamNotifier;
 
@@ -72,6 +73,7 @@ export class MongoEventStore implements EventStore {
     this.client = new MongoClient(connectionString);
     this.db = this.client.db(this.databaseName);
     this.collection = this.db.collection<EventDocument>(EVENTS_COLLECTION_NAME);
+    this.sequenceCounterCollection = this.db.collection<{ _id: string; sequence: number }>('_sequence_counters');
     
     // This is the "Default" EventStreamNotifier, but allow override
     this.notifier = options.notifier ?? new MemoryEventStreamNotifier();
@@ -162,15 +164,21 @@ export class MongoEventStore implements EventStore {
             );
           }
 
-          // Get the global max sequence number (for generating new sequence numbers)
-          const globalMaxSeqDoc = await this.collection
-            .find({}, { session })
-            .sort({ sequence_number: -1 })
-            .limit(1)
-            .toArray();
+          // Atomically get the next sequence number using findOneAndUpdate
+          // This ensures thread-safe sequence number generation, avoiding race conditions
+          const counterResult = await this.sequenceCounterCollection.findOneAndUpdate(
+            { _id: 'events' },
+            { $inc: { sequence: events.length } },
+            { 
+              upsert: true, 
+              returnDocument: 'after',
+              session 
+            }
+          );
 
-          const globalMaxSeq = globalMaxSeqDoc.length > 0 ? globalMaxSeqDoc[0].sequence_number : 0;
-          const nextSequenceNumber = globalMaxSeq + 1;
+          // Calculate starting sequence number
+          // If counter didn't exist, it starts at events.length (we'll subtract to get 1-based)
+          const nextSequenceNumber = (counterResult?.sequence ?? events.length) - events.length + 1;
 
           // Prepare events for insertion
           const eventsToInsert = prepareEventsForInsert(events);
@@ -236,6 +244,13 @@ export class MongoEventStore implements EventStore {
       const collection = await createEventsCollection(this.db);
       await createIndexes(collection);
       this.collection = collection;
+      
+      // Initialize sequence counter if it doesn't exist
+      const counterExists = await this.sequenceCounterCollection.findOne({ _id: 'events' });
+      if (!counterExists) {
+        await this.sequenceCounterCollection.insertOne({ _id: 'events', sequence: 0 });
+      }
+      
       console.log(`Collection and indexes created: ${EVENTS_COLLECTION_NAME}`);
     } catch (err: any) {
       throw new Error(`eventstore-stores-mongodb-err10: Failed to create collection/indexes: ${err.message}`);
