@@ -1,10 +1,37 @@
 import { EventRecord, Event } from '../../types';
 
+/**
+ * Redis Stream entry structure returned by XRANGE
+ */
+export interface StreamEntry {
+  id: string; // Stream ID in format "timestamp-sequence"
+  message: Record<string, string>; // Field-value pairs
+}
+
+/**
+ * Event document extracted from Redis Stream entry
+ */
 export interface EventDocument {
+  streamId: string;
   sequence_number: number;
   occurred_at: string; // ISO date string
   event_type: string;
   payload: Record<string, unknown>;
+}
+
+/**
+ * Converts a Redis Stream entry to an EventDocument
+ */
+export function streamEntryToEventDocument(entry: StreamEntry): EventDocument {
+  const message = entry.message;
+  
+  return {
+    streamId: entry.id,
+    sequence_number: parseInt(message.sequence_number || '0', 10),
+    occurred_at: message.occurred_at || new Date().toISOString(),
+    event_type: message.event_type || '',
+    payload: message.payload ? JSON.parse(message.payload) : {},
+  };
 }
 
 /**
@@ -20,7 +47,15 @@ export function deserializeEvent(doc: EventDocument): EventRecord {
 }
 
 /**
- * Converts Redis documents to EventRecord array
+ * Converts Redis Stream entries to EventRecord array
+ */
+export function mapStreamEntriesToEvents(entries: StreamEntry[]): EventRecord[] {
+  const docs = entries.map(streamEntryToEventDocument);
+  return docs.map((doc) => deserializeEvent(doc));
+}
+
+/**
+ * Converts EventDocuments to EventRecord array (for backward compatibility)
  */
 export function mapDocumentsToEvents(docs: EventDocument[]): EventRecord[] {
   return docs.map((doc) => deserializeEvent(doc));
@@ -40,10 +75,28 @@ export function extractMaxSequenceNumber(docs: EventDocument[]): number {
 }
 
 /**
- * Prepares events for Redis storage
+ * Prepares events for Redis Stream storage as field-value pairs for XADD
+ * Returns an object with field-value pairs (all values must be strings)
+ */
+export function prepareEventForStreamStorage(
+  event: Event,
+  sequenceNumber: number,
+  occurredAt: Date
+): Record<string, string> {
+  return {
+    sequence_number: sequenceNumber.toString(),
+    occurred_at: occurredAt.toISOString(),
+    event_type: event.eventType,
+    payload: JSON.stringify(event.payload),
+  };
+}
+
+/**
+ * Prepares events for Redis storage (legacy function for backward compatibility)
  */
 export function prepareEventForStorage(event: Event, sequenceNumber: number, occurredAt: Date): EventDocument {
   return {
+    streamId: '', // Not used in legacy mode
     sequence_number: sequenceNumber,
     occurred_at: occurredAt.toISOString(),
     event_type: event.eventType,

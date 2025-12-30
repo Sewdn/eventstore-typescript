@@ -10,16 +10,19 @@ import {
 } from '../../types';
 import { compileQueryFilter, getEventTypesToQuery } from './query';
 import {
+  mapStreamEntriesToEvents,
   mapDocumentsToEvents,
   extractMaxSequenceNumber,
+  prepareEventForStreamStorage,
   prepareEventForStorage,
+  streamEntryToEventDocument,
+  StreamEntry,
   EventDocument,
 } from './transform';
 import {
+  STREAM_KEY,
   SEQUENCE_COUNTER_KEY,
-  getEventKey,
   getEventTypeIndexKey,
-  parseSequenceNumberFromKey,
   getDatabaseNameFromConnectionString,
 } from './schema';
 import { createFilter, createQuery } from '../../filter';
@@ -97,59 +100,22 @@ export class RedisEventStore implements EventStore {
       const eventTypesToQuery = getEventTypesToQuery(eventQuery);
       const filterFn = compileQueryFilter(eventQuery);
 
-      // Fetch events
-      const allEvents: EventDocument[] = [];
+      // Fetch all events from Redis Stream using XRANGE
+      // XRANGE returns entries from start (-) to end (+)
+      const streamEntries = await this.client.xRange(STREAM_KEY, '-', '+');
+      
+      // Convert stream entries to EventDocuments
+      const allEventDocs: EventDocument[] = streamEntries.map(streamEntryToEventDocument);
 
-      if (eventTypesToQuery && eventTypesToQuery.length > 0) {
-        // Query specific event types using index
-        for (const eventType of eventTypesToQuery) {
-          const indexKey = getEventTypeIndexKey(eventType);
-          const sequenceNumbers = await this.client.sMembers(indexKey);
-          
-          for (const seqStr of sequenceNumbers) {
-            const seqNum = parseInt(seqStr, 10);
-            if (isNaN(seqNum)) continue;
-            
-            const eventKey = getEventKey(seqNum);
-            const eventData = await this.client.get(eventKey);
-            if (eventData) {
-              const doc = JSON.parse(eventData) as EventDocument;
-              if (filterFn(doc)) {
-                allEvents.push(doc);
-              }
-            }
-          }
-        }
-      } else {
-        // Query all events using SCAN iterator (non-blocking, production-safe)
-        // In node-redis v5, scanIterator yields arrays of keys, not individual keys
-        const scanOptions: { MATCH: string; COUNT?: number } = {
-          MATCH: 'eventstore:events:*',
-        };
-        if (this.scanCount !== undefined) {
-          scanOptions.COUNT = this.scanCount;
-        }
+      // Filter events based on query criteria
+      const filteredDocs = allEventDocs.filter((doc) => filterFn(doc));
 
-        for await (const keys of this.client.scanIterator(scanOptions)) {
-          // Process keys in batches (scanIterator yields arrays in v5)
-          for (const key of keys) {
-            const eventData = await this.client.get(key);
-            if (eventData) {
-              const doc = JSON.parse(eventData) as EventDocument;
-              if (filterFn(doc)) {
-                allEvents.push(doc);
-              }
-            }
-          }
-        }
-      }
-
-      // Sort by sequence number
-      allEvents.sort((a, b) => a.sequence_number - b.sequence_number);
+      // Sort by sequence number (should already be sorted by stream ID, but ensure it)
+      filteredDocs.sort((a, b) => a.sequence_number - b.sequence_number);
 
       return {
-        events: mapDocumentsToEvents(allEvents),
-        maxSequenceNumber: extractMaxSequenceNumber(allEvents),
+        events: mapDocumentsToEvents(filteredDocs),
+        maxSequenceNumber: extractMaxSequenceNumber(filteredDocs),
       };
     } catch (error) {
       throw new Error(`eventstore-stores-redis-err04: Query failed: ${error}`);
@@ -205,60 +171,25 @@ export class RedisEventStore implements EventStore {
       let retries = 0;
       let success = false;
       let documentsToStore: EventDocument[] = [];
+      const streamIds: string[] = [];
 
       while (!success && retries < maxRetries) {
         // Watch the sequence counter to detect concurrent modifications
         await this.client.watch(SEQUENCE_COUNTER_KEY);
 
-        // Get the current max sequence number for the context (while watching)
+        // Get the current max sequence number for the context using XREVRANGE
+        // XREVRANGE gets the latest entries from the stream (reverse order)
         const filterFn = compileQueryFilter(eventQuery);
-        const eventTypesToQuery = getEventTypesToQuery(eventQuery);
-
+        
+        // Get all events from stream to find max sequence matching the filter
+        const allEntries = await this.client.xRange(STREAM_KEY, '-', '+');
         let contextMaxSeq = 0;
-        if (eventTypesToQuery && eventTypesToQuery.length > 0) {
-          // Check max sequence for specific event types
-          for (const eventType of eventTypesToQuery) {
-            const indexKey = getEventTypeIndexKey(eventType);
-            const sequenceNumbers = await this.client.sMembers(indexKey);
-            
-            for (const seqStr of sequenceNumbers) {
-              const seqNum = parseInt(seqStr, 10);
-              if (seqNum > contextMaxSeq) {
-                const eventKey = getEventKey(seqNum);
-                const eventData = await this.client.get(eventKey);
-                if (eventData) {
-                  const doc = JSON.parse(eventData) as EventDocument;
-                  if (filterFn(doc)) {
-                    contextMaxSeq = Math.max(contextMaxSeq, seqNum);
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          // Check all events using SCAN iterator (non-blocking, production-safe)
-          // In node-redis v5, scanIterator yields arrays of keys, not individual keys
-          const scanOptions: { MATCH: string; COUNT?: number } = {
-            MATCH: 'eventstore:events:*',
-          };
-          if (this.scanCount !== undefined) {
-            scanOptions.COUNT = this.scanCount;
-          }
-
-          for await (const keys of this.client.scanIterator(scanOptions)) {
-            // Process keys in batches (scanIterator yields arrays in v5)
-            for (const key of keys) {
-              const seqNum = parseSequenceNumberFromKey(key);
-              if (seqNum !== null && seqNum > contextMaxSeq) {
-                const eventData = await this.client.get(key);
-                if (eventData) {
-                  const doc = JSON.parse(eventData) as EventDocument;
-                  if (filterFn(doc)) {
-                    contextMaxSeq = Math.max(contextMaxSeq, seqNum);
-                  }
-                }
-              }
-            }
+        
+        // Find the max sequence number that matches the filter
+        for (const entry of allEntries) {
+          const doc = streamEntryToEventDocument(entry);
+          if (filterFn(doc)) {
+            contextMaxSeq = Math.max(contextMaxSeq, doc.sequence_number);
           }
         }
 
@@ -278,26 +209,27 @@ export class RedisEventStore implements EventStore {
         // Prepare all event data with correct sequence numbers
         const now = new Date();
         documentsToStore = [];
+        streamIds.length = 0; // Clear previous stream IDs
         const multi = this.client.multi();
 
         // Increment counter once for all events
         multi.incrBy(SEQUENCE_COUNTER_KEY, events.length);
 
+        // Add events to stream using XADD
         for (let i = 0; i < events.length; i++) {
           const event = events[i];
           if (!event) continue;
           
           const sequenceNumber = startSequenceNumber + i;
+          const streamFields = prepareEventForStreamStorage(event, sequenceNumber, now);
+          
+          // XADD returns the stream ID, we'll capture it after execution
+          // For now, use '*' to let Redis generate the ID
+          multi.xAdd(STREAM_KEY, '*', streamFields);
+          
+          // Store document for notification (we'll update streamId after execution)
           const doc = prepareEventForStorage(event, sequenceNumber, now);
           documentsToStore.push(doc);
-
-          const eventKey = getEventKey(sequenceNumber);
-          const indexKey = getEventTypeIndexKey(doc.event_type);
-          const indexValue = sequenceNumber.toString();
-
-          // Queue event storage operations in transaction
-          multi.set(eventKey, JSON.stringify(doc));
-          multi.sAdd(indexKey, indexValue);
         }
 
         // Execute transaction atomically
@@ -308,6 +240,35 @@ export class RedisEventStore implements EventStore {
           // Transaction was aborted (counter was modified), retry
           retries++;
           continue;
+        }
+
+        // Extract stream IDs from XADD results
+        // execResult is an array of command results in order
+        // Each XADD returns a stream ID string
+        if (execResult) {
+          let xaddIndex = 1; // First command is INCRBY, then XADD commands
+          for (let i = 0; i < documentsToStore.length; i++) {
+            const streamId = execResult[xaddIndex] as string | undefined;
+            if (streamId) {
+              streamIds.push(streamId);
+              documentsToStore[i]!.streamId = streamId;
+            }
+            xaddIndex++;
+          }
+        }
+
+        // Update indexes with stream IDs (outside transaction for now)
+        // We could include these in the transaction, but SADD doesn't need to be atomic with XADD
+        for (let i = 0; i < events.length; i++) {
+          const event = events[i];
+          if (!event) continue;
+          
+          const indexKey = getEventTypeIndexKey(event.eventType);
+          const streamId = streamIds[i];
+          if (streamId) {
+            // Add stream ID to index set
+            await this.client.sAdd(indexKey, streamId);
+          }
         }
 
         success = true;
@@ -322,10 +283,6 @@ export class RedisEventStore implements EventStore {
           'eventstore-stores-redis-err10: Failed to append events after maximum retries (concurrent modification detected)'
         );
       }
-
-      // Convert stored documents to EventRecord[] and notify subscribers
-      const insertedEvents = mapDocumentsToEvents(documentsToStore);
-      await this.notifier.notify(insertedEvents);
     } catch (error) {
       if (error instanceof Error && error.message.includes('Context changed')) {
         throw error;

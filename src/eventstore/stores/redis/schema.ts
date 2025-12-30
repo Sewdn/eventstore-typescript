@@ -1,19 +1,11 @@
 /**
- * Redis key patterns and schema definitions for event storage
+ * Redis key patterns and schema definitions for event storage using Redis Streams
  */
 
+export const STREAM_KEY = 'eventstore:stream';
 export const SEQUENCE_COUNTER_KEY = 'eventstore:sequence:counter';
-export const EVENTS_KEY_PREFIX = 'eventstore:events:';
-export const EVENT_KEY_PATTERN = `${EVENTS_KEY_PREFIX}*`;
 export const EVENT_INDEX_TYPE_KEY = 'eventstore:index:type:';
 export const EVENT_INDEX_TYPE_PATTERN = `${EVENT_INDEX_TYPE_KEY}*`;
-
-/**
- * Gets the Redis key for a specific event by sequence number
- */
-export function getEventKey(sequenceNumber: number): string {
-  return `${EVENTS_KEY_PREFIX}${sequenceNumber}`;
-}
 
 /**
  * Gets the Redis key for event type index
@@ -23,11 +15,22 @@ export function getEventTypeIndexKey(eventType: string): string {
 }
 
 /**
- * Parses sequence number from event key
+ * Parses sequence number from stream entry ID
+ * Stream IDs are in format: <timestamp>-<sequence>
+ * We store sequence_number as a field, but can also extract from ID if needed
  */
-export function parseSequenceNumberFromKey(key: string): number | null {
-  const match = key.match(/^eventstore:events:(\d+)$/);
-  return match ? parseInt(match[1], 10) : null;
+export function parseSequenceNumberFromStreamId(streamId: string | undefined): number | null {
+  if (!streamId) {
+    return null;
+  }
+  // Stream IDs are in format: "1234567890-0"
+  // We'll primarily use the sequence_number field, but this can be a fallback
+  const parts = streamId.split('-');
+  if (parts.length === 2) {
+    const seq = parseInt(parts[1] || '0', 10);
+    return isNaN(seq) ? null : seq;
+  }
+  return null;
 }
 
 /**
@@ -37,9 +40,17 @@ export function getDatabaseNameFromConnectionString(connectionString: string): n
   try {
     // Handle both URL format (redis://host:port?db=0) and simple format
     if (connectionString.includes('?')) {
-      const url = new URL(connectionString);
-      const dbParam = url.searchParams.get('db');
-      return dbParam ? parseInt(dbParam, 10) : 0;
+      // Parse URL manually to avoid URL constructor issues
+      const urlParts = connectionString.split('?');
+      if (urlParts.length === 2) {
+        const params = urlParts[1]?.split('&') || [];
+        for (const param of params) {
+          const [key, value] = param.split('=');
+          if (key === 'db' && value) {
+            return parseInt(value, 10);
+          }
+        }
+      }
     }
     // If not a URL format, assume default database 0
     return 0;
