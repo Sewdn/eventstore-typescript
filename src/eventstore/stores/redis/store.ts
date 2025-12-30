@@ -179,17 +179,51 @@ export class RedisEventStore implements EventStore {
 
         // Get the current max sequence number for the context using XREVRANGE
         // XREVRANGE gets the latest entries from the stream (reverse order)
+        // We read events in reverse order and stop when we find matching events
         const filterFn = compileQueryFilter(eventQuery);
         
-        // Get all events from stream to find max sequence matching the filter
-        const allEntries = await this.client.xRange(STREAM_KEY, '-', '+');
+        // Use XREVRANGE to get latest events (most efficient for finding max sequence)
+        // Read in batches until we find events matching the filter
         let contextMaxSeq = 0;
+        let lastId = '+'; // Start from the end
+        const batchSize = 100; // Read events in batches
         
-        // Find the max sequence number that matches the filter
-        for (const entry of allEntries) {
-          const doc = streamEntryToEventDocument(entry);
-          if (filterFn(doc)) {
-            contextMaxSeq = Math.max(contextMaxSeq, doc.sequence_number);
+        // Read events in reverse order until we have enough context
+        while (true) {
+          const entries = await this.client.xRevRange(STREAM_KEY, lastId, '-', { COUNT: batchSize });
+          
+          if (entries.length === 0) {
+            break; // No more events
+          }
+          
+          // Check entries in this batch
+          let foundMatch = false;
+          for (const entry of entries) {
+            const doc = streamEntryToEventDocument(entry);
+            if (filterFn(doc)) {
+              contextMaxSeq = Math.max(contextMaxSeq, doc.sequence_number);
+              foundMatch = true;
+            }
+          }
+          
+          // If we found matches and we've read enough, we can stop
+          // For optimistic locking, we need the absolute max, so continue reading
+          // But we can optimize: if current max is already >= expected, we can stop early
+          if (contextMaxSeq >= expectedMaxSequenceNumber) {
+            break; // Already found a sequence >= expected, no need to continue
+          }
+          
+          // Move to next batch (earlier in time)
+          const lastEntry = entries[entries.length - 1];
+          if (lastEntry) {
+            lastId = `(${lastEntry.id}`; // Exclusive range for next batch
+          } else {
+            break;
+          }
+          
+          // Safety: if we've read all events, stop
+          if (entries.length < batchSize) {
+            break;
           }
         }
 
@@ -257,17 +291,24 @@ export class RedisEventStore implements EventStore {
           }
         }
 
-        // Update indexes with stream IDs (outside transaction for now)
-        // We could include these in the transaction, but SADD doesn't need to be atomic with XADD
+        // Update indexes with stream IDs using Sorted Sets (outside transaction for now)
+        // Use sequence number as score for efficient range queries
+        // We could include these in the transaction, but ZADD doesn't need to be atomic with XADD
         for (let i = 0; i < events.length; i++) {
           const event = events[i];
           if (!event) continue;
           
           const indexKey = getEventTypeIndexKey(event.eventType);
           const streamId = streamIds[i];
+          const sequenceNumber = startSequenceNumber + i;
+          
           if (streamId) {
-            // Add stream ID to index set
-            await this.client.sAdd(indexKey, streamId);
+            // Add stream ID to sorted set with sequence number as score
+            // This enables efficient range queries by sequence number
+            await this.client.zAdd(indexKey, {
+              score: sequenceNumber,
+              value: streamId,
+            });
           }
         }
 
