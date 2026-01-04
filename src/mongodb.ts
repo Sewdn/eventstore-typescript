@@ -8,6 +8,6 @@ export { createFilter, createQuery } from './eventstore/filter';
 export * from './eventstore/types';
 
 // Export MongoDB-specific stores
-export { MongoEventStore, MongoEventStoreOptions } from './eventstore/stores/mongodb';
+export { MongoEventStore, MongoEventStoreOptions } from './eventstore/stores/mongodb/store';
 
 
