@@ -102,7 +102,17 @@ export class RedisEventStore implements EventStore {
 
       // Fetch all events from Redis Stream using XRANGE
       // XRANGE returns entries from start (-) to end (+)
-      const streamEntries = await this.client.xRange(STREAM_KEY, '-', '+');
+      // Redis client returns objects with { id, message } structure
+      const streamEntriesRaw = await this.client.xRange(STREAM_KEY, '-', '+');
+      
+      // Convert Redis stream entries to StreamEntry format [id, [field1, value1, ...]]
+      const streamEntries: StreamEntry[] = streamEntriesRaw.map((entry) => {
+        const fields: string[] = [];
+        for (const [key, value] of Object.entries(entry.message)) {
+          fields.push(key, typeof value === 'string' ? value : String(value));
+        }
+        return [entry.id, fields];
+      });
       
       // Convert stream entries to EventDocuments
       const allEventDocs: EventDocument[] = streamEntries.map(streamEntryToEventDocument);
@@ -190,11 +200,20 @@ export class RedisEventStore implements EventStore {
         
         // Read events in reverse order until we have enough context
         while (true) {
-          const entries = await this.client.xRevRange(STREAM_KEY, lastId, '-', { COUNT: batchSize });
+          const entriesRaw = await this.client.xRevRange(STREAM_KEY, lastId, '-', { COUNT: batchSize });
           
-          if (entries.length === 0) {
+          if (entriesRaw.length === 0) {
             break; // No more events
           }
+          
+          // Convert Redis stream entries to StreamEntry format [id, [field1, value1, ...]]
+          const entries: StreamEntry[] = entriesRaw.map((entry) => {
+            const fields: string[] = [];
+            for (const [key, value] of Object.entries(entry.message)) {
+              fields.push(key, typeof value === 'string' ? value : String(value));
+            }
+            return [entry.id, fields];
+          });
           
           // Check entries in this batch
           let foundMatch = false;

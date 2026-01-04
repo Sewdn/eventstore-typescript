@@ -1,6 +1,10 @@
-export { PostgresEventStore, PostgresEventStoreOptions } from './stores/postgres';
+// Core exports only - no database-specific stores
+// Database-specific stores are available through their respective entry points:
+// - @ricofritzsche/eventstore/postgres for PostgresEventStore
+// - @ricofritzsche/eventstore/mongodb for MongoEventStore
+// - @ricofritzsche/eventstore/redis for RedisEventStore
+
 export { MemoryEventStore } from './stores/memory';
-export { MongoEventStore, MongoEventStoreOptions } from './stores/mongodb';
 
 export { MemoryEventStreamNotifier } from './notifiers';
 

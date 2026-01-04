@@ -4,3 +4,4 @@
 export * from './index'; // Core functionality
 export { RedisEventStore, RedisEventStoreOptions } from './eventstore/stores/redis';
 
+

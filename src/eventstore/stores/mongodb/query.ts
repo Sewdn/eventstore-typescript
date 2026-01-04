@@ -3,12 +3,15 @@ import { Filter, Document } from 'mongodb';
 
 /**
  * Compiles EventFilter conditions into MongoDB filter
- * 
+ *
  * PostgreSQL's `payload @> predicate` (JSONB contains) is equivalent to checking
  * if all key-value pairs in the predicate exist in the payload.
  * In MongoDB, we construct conditions using dot notation for each field.
  */
-export function compileFilterConditions(filter: EventFilter, paramsBaseIndex: number): Filter<Document> {
+export function compileFilterConditions(
+  filter: EventFilter,
+  paramsBaseIndex: number
+): Filter<Document> {
   const conditions: Filter<Document>[] = [];
 
   // Handle event types (OR condition)
@@ -21,30 +24,37 @@ export function compileFilterConditions(filter: EventFilter, paramsBaseIndex: nu
   // Multiple predicates are ORed together
   // Within each predicate, all key-value pairs are ANDed together
   if (filter.payloadPredicates && filter.payloadPredicates.length > 0) {
-    const payloadConditions = filter.payloadPredicates.map((predicate) => {
-      // Build conditions for each key-value pair in the predicate
-      const predicateConditions: Filter<Document>[] = [];
-      
-      for (const [key, value] of Object.entries(predicate)) {
-        // Use dot notation to check if payload contains this key-value pair
-        // This is MongoDB's equivalent to PostgreSQL's `payload @> { key: value }`
-        const payloadPath = `payload.${key}`;
-        predicateConditions.push({ [payloadPath]: value } as Filter<Document>);
-      }
-      
-      // All conditions in a predicate are ANDed together
-      if (predicateConditions.length === 1) {
-        return predicateConditions[0];
-      }
-      if (predicateConditions.length > 1) {
-        return { $and: predicateConditions };
-      }
-      return {};
-    }).filter((cond) => Object.keys(cond).length > 0);
+    const payloadConditions = filter.payloadPredicates
+      .map((predicate) => {
+        // Build conditions for each key-value pair in the predicate
+        const predicateConditions: Filter<Document>[] = [];
+
+        for (const [key, value] of Object.entries(predicate)) {
+          // Use dot notation to check if payload contains this key-value pair
+          // This is MongoDB's equivalent to PostgreSQL's `payload @> { key: value }`
+          const payloadPath = `payload.${key}`;
+          predicateConditions.push({ [payloadPath]: value } as Filter<Document>);
+        }
+
+        // All conditions in a predicate are ANDed together
+        if (predicateConditions.length === 1) {
+          return predicateConditions[0];
+        }
+        if (predicateConditions.length > 1) {
+          return { $and: predicateConditions };
+        }
+        return {};
+      })
+      .filter(
+        (cond): cond is Filter<Document> => cond !== undefined && Object.keys(cond).length > 0
+      );
 
     // Multiple predicates are ORed together
     if (payloadConditions.length === 1) {
-      conditions.push(payloadConditions[0]);
+      const condition = payloadConditions[0];
+      if (condition !== undefined) {
+        conditions.push(condition);
+      }
     } else if (payloadConditions.length > 1) {
       conditions.push({ $or: payloadConditions });
     }
@@ -55,7 +65,8 @@ export function compileFilterConditions(filter: EventFilter, paramsBaseIndex: nu
     return {};
   }
   if (conditions.length === 1) {
-    return conditions[0];
+    const condition = conditions[0];
+    return condition ?? {};
   }
   return { $and: conditions };
 }
@@ -81,12 +92,13 @@ export function compileQueryConditions(query: EventQuery): Filter<Document> {
   const orConditions = query.filters
     .filter((filter): filter is EventFilter => filter !== undefined)
     .map((filter) => compileFilterConditions(filter, 0));
-  
+
   if (orConditions.length === 0) {
     return {};
   }
   if (orConditions.length === 1) {
-    return orConditions[0];
+    const condition = orConditions[0];
+    return condition ?? {};
   }
   return { $or: orConditions };
 }
@@ -96,10 +108,10 @@ export function compileQueryConditions(query: EventQuery): Filter<Document> {
  */
 export function buildQuery(query: EventQuery): { filter: Filter<Document>; sort: Document } {
   const filter = compileQueryConditions(query);
-  
+
   return {
     filter,
-    sort: { sequence_number: 1 } // Sort by sequence number ascending
+    sort: { sequence_number: 1 }, // Sort by sequence number ascending
   };
 }
 
@@ -112,16 +124,15 @@ export function buildAppendQuery(
   expectedMaxSeq: number
 ): { filter: Filter<Document>; maxSeqFilter: Filter<Document> } {
   const contextFilter = compileQueryConditions(query);
-  
+
   // Filter to find the max sequence number matching the context
   // This is the same as the context filter since we'll query for max sequence
   const maxSeqFilter: Filter<Document> = {
-    ...contextFilter
+    ...contextFilter,
   };
 
   return {
     filter: contextFilter,
-    maxSeqFilter
+    maxSeqFilter,
   };
 }
-

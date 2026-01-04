@@ -4,3 +4,4 @@
 export * from './index'; // Core functionality
 export { MongoEventStore, MongoEventStoreOptions } from './eventstore/stores/mongodb';
 
+

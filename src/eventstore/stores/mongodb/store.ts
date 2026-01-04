@@ -25,7 +25,7 @@ import {
 import { createFilter, createQuery } from '../../filter';
 import { MemoryEventStreamNotifier } from '../../notifiers';
 
-import { MongoClient, Db, Collection } from 'mongodb';
+import { MongoClient, Db, Collection, Filter } from 'mongodb';
 
 const NON_EXISTENT_EVENT_TYPE = '__NON_EXISTENT__' + Math.random().toString(36);
 
@@ -49,7 +49,8 @@ export class MongoEventStore implements EventStore {
   private readonly notifier: EventStreamNotifier;
 
   constructor(options: MongoEventStoreOptions = {}) {
-    const connectionString = options.connectionString || process.env.MONGODB_URL || process.env.DATABASE_URL;
+    const connectionString =
+      options.connectionString || process.env.MONGODB_URL || process.env.DATABASE_URL;
     if (!connectionString) {
       throw new Error(
         'eventstore-stores-mongodb-err02: Connection string missing. MONGODB_URL or DATABASE_URL environment variable not set.'
@@ -73,8 +74,10 @@ export class MongoEventStore implements EventStore {
     this.client = new MongoClient(connectionString);
     this.db = this.client.db(this.databaseName);
     this.collection = this.db.collection<EventDocument>(EVENTS_COLLECTION_NAME);
-    this.sequenceCounterCollection = this.db.collection<{ _id: string; sequence: number }>('_sequence_counters');
-    
+    this.sequenceCounterCollection = this.db.collection<{ _id: string; sequence: number }>(
+      '_sequence_counters'
+    );
+
     // This is the "Default" EventStreamNotifier, but allow override
     this.notifier = options.notifier ?? new MemoryEventStreamNotifier();
   }
@@ -90,8 +93,11 @@ export class MongoEventStore implements EventStore {
           : createQuery(filterCriteria as EventFilter);
 
       const { filter, sort } = buildQuery(eventQuery);
-      
-      const docs = await this.collection.find(filter).sort(sort).toArray();
+
+      const docs = await this.collection
+        .find(filter as unknown as Filter<EventDocument>)
+        .sort(sort)
+        .toArray();
 
       return {
         events: mapDocumentsToEvents(docs),
@@ -107,8 +113,16 @@ export class MongoEventStore implements EventStore {
   }
 
   async append(events: Event[]): Promise<void>;
-  async append(events: Event[], filterCriteria: EventQuery, expectedMaxSequenceNumber: number): Promise<void>;
-  async append(events: Event[], filterCriteria: EventFilter, expectedMaxSequenceNumber: number): Promise<void>;
+  async append(
+    events: Event[],
+    filterCriteria: EventQuery,
+    expectedMaxSequenceNumber: number
+  ): Promise<void>;
+  async append(
+    events: Event[],
+    filterCriteria: EventFilter,
+    expectedMaxSequenceNumber: number
+  ): Promise<void>;
   async append(
     events: Event[],
     filterCriteria?: EventQuery | EventFilter,
@@ -148,14 +162,15 @@ export class MongoEventStore implements EventStore {
         await session.withTransaction(async () => {
           // Get the current max sequence number for the context (for optimistic locking)
           const { maxSeqFilter } = buildAppendQuery(eventQuery, expectedMaxSequenceNumber);
-          
+
           const maxSeqDoc = await this.collection
-            .find(maxSeqFilter, { session })
+            .find(maxSeqFilter as unknown as Filter<EventDocument>, { session })
             .sort({ sequence_number: -1 })
             .limit(1)
             .toArray();
 
-          const contextMaxSeq = maxSeqDoc.length > 0 ? maxSeqDoc[0].sequence_number : 0;
+          const contextMaxSeq =
+            maxSeqDoc.length > 0 && maxSeqDoc[0] ? maxSeqDoc[0].sequence_number : 0;
 
           // Verify optimistic locking
           if (contextMaxSeq !== expectedMaxSequenceNumber) {
@@ -169,10 +184,10 @@ export class MongoEventStore implements EventStore {
           const counterResult = await this.sequenceCounterCollection.findOneAndUpdate(
             { _id: 'events' },
             { $inc: { sequence: events.length } },
-            { 
-              upsert: true, 
+            {
+              upsert: true,
               returnDocument: 'after',
-              session 
+              session,
             }
           );
 
@@ -193,7 +208,7 @@ export class MongoEventStore implements EventStore {
           }));
 
           const result = await this.collection.insertMany(documentsToInsert, { session });
-          
+
           if (result.insertedCount !== events.length) {
             throw new Error(
               `eventstore-stores-mongodb-err07: Failed to insert all events. Expected ${events.length}, inserted ${result.insertedCount}`
@@ -235,7 +250,9 @@ export class MongoEventStore implements EventStore {
       await this.db.listCollections().toArray();
       console.log(`Database ready: ${this.databaseName}`);
     } catch (err: any) {
-      throw new Error(`eventstore-stores-mongodb-err09: Failed to connect to database: ${err.message}`);
+      throw new Error(
+        `eventstore-stores-mongodb-err09: Failed to connect to database: ${err.message}`
+      );
     }
   }
 
@@ -244,17 +261,18 @@ export class MongoEventStore implements EventStore {
       const collection = await createEventsCollection(this.db);
       await createIndexes(collection);
       this.collection = collection;
-      
+
       // Initialize sequence counter if it doesn't exist
       const counterExists = await this.sequenceCounterCollection.findOne({ _id: 'events' });
       if (!counterExists) {
         await this.sequenceCounterCollection.insertOne({ _id: 'events', sequence: 0 });
       }
-      
+
       console.log(`Collection and indexes created: ${EVENTS_COLLECTION_NAME}`);
     } catch (err: any) {
-      throw new Error(`eventstore-stores-mongodb-err10: Failed to create collection/indexes: ${err.message}`);
+      throw new Error(
+        `eventstore-stores-mongodb-err10: Failed to create collection/indexes: ${err.message}`
+      );
     }
   }
 }
-
