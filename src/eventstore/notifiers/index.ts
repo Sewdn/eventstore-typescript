@@ -1,2 +1,2 @@
 export { MemoryEventStreamNotifier } from './memory';
-export { RedisPubSubNotifier, RedisPubSubNotifierOptions } from './redis';
+export { RedisPubSubNotifier, type RedisPubSubNotifierOptions } from './redis';
