@@ -3,5 +3,6 @@
 
 export * from './index'; // Core functionality
 export { RedisEventStore, RedisEventStoreOptions } from './eventstore/stores/redis';
+export { RedisPubSubNotifier, RedisPubSubNotifierOptions } from './eventstore/notifiers/redis';
 
 
