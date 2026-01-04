@@ -8,7 +8,7 @@ export { createFilter, createQuery } from './eventstore/filter';
 export * from './eventstore/types';
 
 // Export Redis-specific stores and notifiers
-export { RedisEventStore, RedisEventStoreOptions } from './eventstore/stores/redis';
-export { RedisPubSubNotifier, RedisPubSubNotifierOptions } from './eventstore/notifiers/redis';
+export { RedisEventStore, type RedisEventStoreOptions } from './eventstore/stores/redis';
+export { RedisPubSubNotifier, type RedisPubSubNotifierOptions } from './eventstore/notifiers/redis';
 
 
