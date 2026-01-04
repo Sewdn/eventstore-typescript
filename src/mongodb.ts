@@ -1,7 +1,13 @@
 // MongoDB distribution entry point
 // Re-exports core functionality plus MongoDB store
 
-export * from './index'; // Core functionality
+// Export core functionality explicitly to avoid conflicts
+export { MemoryEventStore } from './eventstore/stores/memory';
+export { MemoryEventStreamNotifier } from './eventstore/notifiers/memory';
+export { createFilter, createQuery } from './eventstore/filter';
+export * from './eventstore/types';
+
+// Export MongoDB-specific stores
 export { MongoEventStore, MongoEventStoreOptions } from './eventstore/stores/mongodb';
 
 
