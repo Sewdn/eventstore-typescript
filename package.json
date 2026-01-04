@@ -3,32 +3,32 @@
   "version": "1.1.0",
   "type": "module",
   "description": "A TypeScript event sourcing library with pluggable persistence backends (Postgres, MongoDB, Redis), real-time subscriptions, and projection support for building responsive event-sourced applications",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js",
-      "default": "./dist/index.js"
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "require": "./src/index.ts",
+      "default": "./src/index.ts"
     },
     "./postgres": {
-      "types": "./dist/postgres.d.ts",
-      "import": "./dist/postgres.js",
-      "require": "./dist/postgres.js",
-      "default": "./dist/postgres.js"
+      "types": "./src/postgres.ts",
+      "import": "./src/postgres.ts",
+      "require": "./src/postgres.ts",
+      "default": "./src/postgres.ts"
     },
     "./mongodb": {
-      "types": "./dist/mongodb.d.ts",
-      "import": "./dist/mongodb.js",
-      "require": "./dist/mongodb.js",
-      "default": "./dist/mongodb.js"
+      "types": "./src/mongodb.ts",
+      "import": "./src/mongodb.ts",
+      "require": "./src/mongodb.ts",
+      "default": "./src/mongodb.ts"
     },
     "./redis": {
-      "types": "./dist/redis.d.ts",
-      "import": "./dist/redis.js",
-      "require": "./dist/redis.js",
-      "default": "./dist/redis.js"
+      "types": "./src/redis.ts",
+      "import": "./src/redis.ts",
+      "require": "./src/redis.ts",
+      "default": "./src/redis.ts"
     },
     "./src": {
       "types": "./src/index.ts",
@@ -74,7 +74,7 @@
     "format:check": "prettier --check src/**/*.ts",
     "prepublishOnly": "npm run clean && npm run build && npm run test",
     "prepack": "npm run build",
-    "postinstall": "npm run build"
+    "postinstall": "npm run build || true"
   },
   "keywords": [
     "eventstore",
